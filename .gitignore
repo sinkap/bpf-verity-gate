@@ -1,0 +1,5 @@
+*.o
+verity_gate_loader
+vmlinux.h
+*.skel.h
+.vscode/

@@ -1,0 +1,26 @@
+# /etc/systemd/system/verity_gate.service
+[Unit]
+Description=Verity Gate BPF Security Policy
+# Ensure /sys/fs/bpf is mounted before we try to pin there
+RequiresMountsFor=/sys/fs/bpf
+# Start early in the boot process, but after local filesystems
+After=local-fs.target
+DefaultDependencies=no
+# Security: Prevent systemctl stop/restart
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+# The loader runs, pins the program to /sys/fs/bpf/verity_gate, and exits.
+ExecStart=/usr/sbin/verity_gate_loader
+
+# Consider the service "active" even though the process exited
+RemainAfterExit=yes
+
+# Security Hardening for the loader process
+ProtectSystem=full
+ProtectHome=yes
+CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN
+
+[Install]
+WantedBy=sysinit.target
