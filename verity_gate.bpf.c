@@ -23,31 +23,53 @@ int BPF_PROG(verity_gate, int cmd, union bpf_attr *attr, unsigned int size)
     struct file *exe_file;
     int ret = 0;
     __u32 key = 0;
+    char comm[16];
 
-    if (cmd != BPF_PROG_LOAD)
-        return 0;
+    // Get the process name for debugging context
+    bpf_get_current_comm(&comm, sizeof(comm));
 
-    if (attr->signature)
+    // Filter: Only care about BPF_PROG_LOAD
+    if (cmd != BPF_PROG_LOAD) {
+        // Optional: comment this out if it's too noisy
+        // bpf_printk("VerityGate: [%s] Ignoring cmd %d\n", comm, cmd);
         return 0;
+    }
+
+    bpf_printk("VerityGate: [%s] Intercepting BPF_PROG_LOAD\n", comm);
+
+    // Filter: Allow signed programs (if applicable logic applies)
+    if (attr->signature) {
+        bpf_printk("VerityGate: [%s] Allowed (Signature present)\n", comm);
+        return 0;
+    }
 
     struct task_struct *task = bpf_get_current_task_btf();
-    if (!task)
+    if (!task) {
+        bpf_printk("VerityGate: [%s] ERROR: Failed to get task struct\n", comm);
         return -EPERM;
+    }
 
     exe_file = bpf_get_task_exe_file(task);
-    if (!exe_file)
+    if (!exe_file) {
+        bpf_printk("VerityGate: [%s] ERROR: Failed to get exe_file (no binary backing?)\n", comm);
         return -EPERM;
+    }
 
     trusted_digest = bpf_map_lookup_elem(&allowed_root_hash, &key);
     if (!trusted_digest) {
+        bpf_printk("VerityGate: [%s] ERROR: Map lookup failed (Trusted digest not set)\n", comm);
         bpf_put_file(exe_file);
         return -EPERM;
     }
 
+    // Perform the DM-Verity Check
     ret = bpf_verify_dm_verity_digest(exe_file, trusted_digest, 32);
+
     if (ret != 0) {
-        bpf_printk("BPF Blocked: Loader not verified (err: %d)\n", ret);
+        bpf_printk("VerityGate: [%s] BLOCKED: DM-Verity check failed (err: %d)\n", comm, ret);
         ret = -EPERM;
+    } else {
+        bpf_printk("VerityGate: [%s] ALLOWED: DM-Verity check passed\n", comm);
     }
 
     bpf_put_file(exe_file);
