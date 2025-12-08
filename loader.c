@@ -34,10 +34,7 @@ static int hex_str_to_bytes(const char *hex, __u8 *bytes, int max_len)
 int main(int argc, char **argv)
 {
 	struct verity_gate_bpf *skel = NULL;
-	__u8 trusted_hash[HASH_SIZE] = {0};
 	char link_path[PATH_MAX];
-	int map_fd;
-	int key = 0;
 	int err;
 
 	if (argc < 2) {
@@ -50,28 +47,15 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	if (hex_str_to_bytes(argv[1], trusted_hash, HASH_SIZE) != 0) {
-		fprintf(stderr, "VerityGate: Invalid roothash format\n");
-		return 1;
-	}
-
 	skel = verity_gate_bpf__open_and_load();
 	if (!skel) {
 		fprintf(stderr, "VerityGate: Failed to open and load BPF\n");
 		return 1;
 	}
 
-	map_fd = bpf_map__fd(skel->maps.allowed_root_hash);
-	if (map_fd < 0) {
-		fprintf(stderr, "VerityGate: Failed to get map FD\n");
-		err = -1;
-		goto cleanup;
-	}
-
-	err = bpf_map_update_elem(map_fd, &key, trusted_hash, BPF_ANY);
-	if (err) {
-		fprintf(stderr, "VerityGate: Failed to update map: %d\n", err);
-		goto cleanup;
+	if (hex_str_to_bytes(argv[1], skel->bss->trusted_digest, HASH_SIZE) != 0) {
+		fprintf(stderr, "VerityGate: Invalid roothash format\n");
+		return 1;
 	}
 
 	err = verity_gate_bpf__attach(skel);

@@ -13,13 +13,7 @@ extern void bpf_put_file(struct file *file) __ksym;
 
 #define DIGEST_SIZE 32
 __u8 current_digest[DIGEST_SIZE] = {0};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, __u8[DIGEST_SIZE]);
-} allowed_root_hash SEC(".maps");
+__u8 trusted_digest[DIGEST_SIZE] = {0};
 
 /**
  * BPF_PROG(verity_gate) - LSM hook for BPF program loading.
@@ -36,7 +30,6 @@ struct {
 SEC("lsm.s/bpf")
 int BPF_PROG(verity_gate, int cmd, union bpf_attr *attr, unsigned int size)
 {
-    __u8 *trusted_digest;
     struct file *exe_file;
     int ret = 0;
     __u32 key = 0;
@@ -68,13 +61,6 @@ int BPF_PROG(verity_gate, int cmd, union bpf_attr *attr, unsigned int size)
     if (!exe_file) {
         bpf_printk("VerityGate: [%s] ERROR: Failed to get exe_file (no binary backing?)\n", comm);
         return -EPERM;
-    }
-
-    trusted_digest = bpf_map_lookup_elem(&allowed_root_hash, &key);
-    if (!trusted_digest) {
-        bpf_printk("VerityGate: [%s] ERROR: Map lookup failed (Trusted digest not set)\n", comm);
-        ret = -EPERM;
-        goto out_put_file;
     }
 
     ret = bpf_dynptr_from_mem(current_digest, digest_size, 0, &digest_dynptr);
