@@ -5,17 +5,34 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-extern int bpf_verify_dm_verity_digest(struct file *file, __u8 *trusted_digest, __u32 trusted_digest_len) __ksym;
+struct bpf_dynptr;
+
+extern int bpf_get_dm_verity_digest(struct file *file, struct bpf_dynptr *digest_p) __ksym;
 extern struct file *bpf_get_task_exe_file(struct task_struct *task) __ksym;
 extern void bpf_put_file(struct file *file) __ksym;
+
+#define DIGEST_SIZE 32
+__u8 current_digest[DIGEST_SIZE] = {0};
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, __u8[32]);
+    __type(value, __u8[DIGEST_SIZE]);
 } allowed_root_hash SEC(".maps");
 
+/**
+ * BPF_PROG(verity_gate) - LSM hook for BPF program loading.
+ *
+ * Intercepts BPF program load requests and verifies the executable file
+ * (the process attempting to load BPF) against a trusted dm-verity hash.
+ *
+ * @cmd: The BPF command being executed.
+ * @attr: Attributes for the command.
+ * @size: Size of the attributes struct.
+ *
+ * Return: 0 to allow the operation, or a negative error code (e.g., -EPERM) to block.
+ */
 SEC("lsm.s/bpf")
 int BPF_PROG(verity_gate, int cmd, union bpf_attr *attr, unsigned int size)
 {
@@ -24,20 +41,18 @@ int BPF_PROG(verity_gate, int cmd, union bpf_attr *attr, unsigned int size)
     int ret = 0;
     __u32 key = 0;
     char comm[16];
+    struct bpf_dynptr digest_dynptr;
+    const __u32 digest_size = DIGEST_SIZE;
+    __u32 i;
+    int cmp_ret = 0;
 
-    // Get the process name for debugging context
     bpf_get_current_comm(&comm, sizeof(comm));
 
-    // Filter: Only care about BPF_PROG_LOAD
-    if (cmd != BPF_PROG_LOAD) {
-        // Optional: comment this out if it's too noisy
-        // bpf_printk("VerityGate: [%s] Ignoring cmd %d\n", comm, cmd);
+    if (cmd != BPF_PROG_LOAD)
         return 0;
-    }
 
     bpf_printk("VerityGate: [%s] Intercepting BPF_PROG_LOAD\n", comm);
 
-    // Filter: Allow signed programs (if applicable logic applies)
     if (attr->signature) {
         bpf_printk("VerityGate: [%s] Allowed (Signature present)\n", comm);
         return 0;
@@ -58,20 +73,41 @@ int BPF_PROG(verity_gate, int cmd, union bpf_attr *attr, unsigned int size)
     trusted_digest = bpf_map_lookup_elem(&allowed_root_hash, &key);
     if (!trusted_digest) {
         bpf_printk("VerityGate: [%s] ERROR: Map lookup failed (Trusted digest not set)\n", comm);
-        bpf_put_file(exe_file);
-        return -EPERM;
+        ret = -EPERM;
+        goto out_put_file;
     }
 
-    // Perform the DM-Verity Check
-    ret = bpf_verify_dm_verity_digest(exe_file, trusted_digest, 32);
+    ret = bpf_dynptr_from_mem(current_digest, digest_size, 0, &digest_dynptr);
+    if (ret) {
+        bpf_printk("VerityGate: [%s] ERROR: Dynptr init failed (err: %d)\n", comm, ret);
+        ret = -EPERM;
+        goto out_put_file;
+    }
 
+    ret = bpf_get_dm_verity_digest(exe_file, &digest_dynptr);
     if (ret != 0) {
-        bpf_printk("VerityGate: [%s] BLOCKED: DM-Verity check failed (err: %d)\n", comm, ret);
+        bpf_printk("VerityGate: [%s] BLOCKED: Get digest failed (err: %d)\n", comm, ret);
+        ret = -EPERM;
+        goto out_put_file;
+    }
+
+    for (i = 0; i < digest_size; i++) {
+        if (current_digest[i] != trusted_digest[i]) {
+            cmp_ret = 1;
+            break;
+        }
+    }
+
+    ret = cmp_ret;
+    if (ret != 0) {
+        bpf_printk("VerityGate: [%s] BLOCKED: DM-Verity hash MISMATCH (cmp ret: %d)\n", comm, ret);
         ret = -EPERM;
     } else {
-        bpf_printk("VerityGate: [%s] ALLOWED: DM-Verity check passed\n", comm);
+        bpf_printk("VerityGate: [%s] ALLOWED: DM-Verity hash match\n", comm);
+        ret = 0;
     }
 
+out_put_file:
     bpf_put_file(exe_file);
     return ret;
 }
