@@ -2,12 +2,12 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <errno.h>
+#include <linux/limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <linux/limits.h>
 
 #define HASH_SIZE 32
 #define PIN_PATH "/sys/fs/bpf/verity_gate"
@@ -15,10 +15,9 @@
 static int hex_str_to_bytes(const char *hex, __u8 *bytes, int max_len)
 {
 	unsigned int temp;
-	int len;
+	int len = strlen(hex);
 	int i;
 
-	len = strlen(hex);
 	if (len % 2 != 0 || (len / 2) > max_len)
 		return -1;
 
@@ -27,7 +26,6 @@ static int hex_str_to_bytes(const char *hex, __u8 *bytes, int max_len)
 			return -1;
 		bytes[i] = (__u8)temp;
 	}
-
 	return 0;
 }
 
@@ -36,9 +34,16 @@ int main(int argc, char **argv)
 	struct verity_gate_bpf *skel = NULL;
 	char link_path[PATH_MAX];
 	int err;
+	__u32 key_serial = 0;
 
-	if (argc < 2) {
-		fprintf(stderr, "Usage: %s <roothash>\n", argv[0]);
+	if (argc < 3) {
+		fprintf(stderr, "Usage: %s <roothash> <key_serial_id>\n", argv[0]);
+		return 1;
+	}
+
+	key_serial = (__u32)strtoul(argv[2], NULL, 10);
+	if (key_serial == 0) {
+		fprintf(stderr, "VerityGate: Invalid key serial (0)\n");
 		return 1;
 	}
 
@@ -53,10 +58,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (hex_str_to_bytes(argv[1], skel->bss->trusted_digest, HASH_SIZE) != 0) {
+	if (hex_str_to_bytes(argv[1], skel->bss->trusted_dm_digest, HASH_SIZE) != 0) {
 		fprintf(stderr, "VerityGate: Invalid roothash format\n");
 		return 1;
 	}
+
+	skel->bss->verification_key_serial = key_serial;
+	printf("VerityGate: Configuration loaded (Key Serial: %u)\n", key_serial);
 
 	err = verity_gate_bpf__attach(skel);
 	if (err) {

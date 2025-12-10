@@ -1,0 +1,54 @@
+#!/bin/bash
+set -e
+
+LOADER=${LOADER_BIN:-/usr/sbin/verity_gate_loader}
+KEYRING_NAME="verity_gate_keys"
+DER_KEY="/etc/pki/bpf-trust/verification_key.der"
+
+if [ ! -f "$DER_KEY" ]; then
+    echo "Error: Key not found at $DER_KEY"
+    echo "       Did you run './bpf-trust.sh inject-public-key'?"
+    exit 1
+fi
+
+echo "Setting up verification keyring..."
+
+# We use the User Keyring (@u) as the anchor so it persists for the service user (root)
+RING_ID=$(keyctl search @u keyring "$KEYRING_NAME" 2>/dev/null || true)
+
+# If not found, create it and link it to @u
+if [ -z "$RING_ID" ]; then
+    RING_ID=$(keyctl newring "$KEYRING_NAME" @u)
+    echo "  Created new keyring: $KEYRING_NAME ($RING_ID)"
+else
+    echo "  Found existing keyring: $KEYRING_NAME ($RING_ID)"
+fi
+
+keyctl setperm "$RING_ID" 0x3f3f3f3f
+
+echo "Loading Asymmetric Key..."
+KEY_SERIAL=$(keyctl padd asymmetric "verity_gate_key" "$RING_ID" < "$DER_KEY")
+
+if [ -z "$KEY_SERIAL" ]; then
+    echo "Error: Failed to load key. Ensure CONFIG_ASYMMETRIC_KEY_TYPE=y"
+    exit 1
+fi
+
+# Grant permissions to the Key itself so the BPF program can read it
+keyctl setperm "$KEY_SERIAL" 0x3f3f3f3f
+
+ROOTHASH=$(sed -n "s/.*roothash=\([^ ]*\).*/\1/p" /proc/cmdline)
+
+if [ -z "$ROOTHASH" ]; then
+    echo "Warning: No 'roothash=' found in /proc/cmdline. Passing empty."
+    ROOTHASH="0000000000000000000000000000000000000000000000000000000000000000"
+fi
+
+echo "Verity Gate Started"
+echo "  Loader Bin:  $LOADER"
+echo "  Key Path:    $DER_KEY"
+echo "  Keyring ID:  $RING_ID  <-- Passing this to BPF"
+echo "  Key Serial:  $KEY_SERIAL"
+echo "  Root Hash:   ${ROOTHASH:0:12}..."
+
+exec "$LOADER" "$ROOTHASH" "$RING_ID"

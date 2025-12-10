@@ -1,18 +1,23 @@
 [Unit]
 Description=Verity Gate BPF Security Policy
-RequiresMountsFor=/sys/fs/bpf
+RequiresMountsFor=/sys/fs/bpf /etc/pki/bpf-trust
 After=local-fs.target
 DefaultDependencies=no
 RefuseManualStop=yes
+ConditionPathExists=/etc/pki/bpf-trust/verification_key.pem
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'exec /usr/sbin/verity_gate_loader $(sed -n "s/.*roothash=\\([^ ]*\\).*/\\1/p" /proc/cmdline)'
-
 RemainAfterExit=yes
 ProtectSystem=full
 ProtectHome=yes
 CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN
+
+# Shared keyring is required for the script to pass the key to the loader
+KeyringMode=shared
+
+# Run the helper script
+ExecStart=/usr/local/bin/verity_gate_start
 
 [Install]
 WantedBy=sysinit.target
